@@ -56,7 +56,7 @@ const GoGoRoomDashboard = ({ match }) => {
   useEffect(() => {
     if(!isAuthenticated) return;
       //${process.env.REACT_APP_API_URL}
-      const s = io(`/rooms`);
+      const s = io(`${process.env.REACT_APP_API_URL}/rooms`);
       setSocket(s);
   
       return () => {

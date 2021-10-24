@@ -54,7 +54,7 @@ const GoGoRooms = () => {
 
     useEffect(() => {
         if(!isAuthenticated) return;
-        const s  = io(/* process.env.REACT_APP_API_URL */)
+        const s  = io(process.env.REACT_APP_API_URL)
         setSocket(s);
 
         return () => {
