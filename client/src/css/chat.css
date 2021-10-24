@@ -1,0 +1,8 @@
+.loadMore{
+    cursor: pointer;
+    font-size:14px;
+}
+
+.loadMore:hover{
+    color: #6d6767;
+}
