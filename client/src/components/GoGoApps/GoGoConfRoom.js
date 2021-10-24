@@ -158,7 +158,7 @@ const GoGoRoom = ({ match }) => {
   const peersRef = useRef([]);
   useEffect(() => {
     //${process.env.REACT_APP_API_URL}
-    const s = io(`${process.env.REACT_APP_API_URL}/gogo-conf-room`);
+    const s = io(`/gogo-conf-room`);
     setSocket(s);
 
     return () => {
