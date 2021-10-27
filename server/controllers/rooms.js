@@ -748,11 +748,9 @@ async function postScheduledAnnouncements(){
     const API_URL = process.env.API_BASE_URL;  
     const pendingAnnouncements = await getScheduledAnnouncements();
     
-
+    let current = moment().tz(process.env.TIMEZONE).seconds(0).milliseconds(0).format();
+    console.log(`Current Time: ${current}`);
     if(pendingAnnouncements.length){
-      //let current = new Date().toISOString();
-      let current = moment().tz(process.env.TIMEZONE).seconds(0).milliseconds(0).format();
-      console.log(`Current: ${current}`);
       pendingAnnouncements.forEach( async (a) => {
           let ann = moment(a.announceOn).tz(process.env.TIMEZONE).seconds(0).milliseconds(0).format();
           console.log(`announcement ${a.title}: ${ann}`);

@@ -392,7 +392,7 @@ router.post('/announcement',verifyToken, async(req, res, next) => {
         const attachment = (req.body.attachment)? req.body.attachment:'';
 
         const announceOn = (req.body.schedule)? new Date(req.body.schedule):null;
-
+        console.log(announceOn);
         let createNewAnnouncement = await createAnnouncement({
             title:title,
             description:description,

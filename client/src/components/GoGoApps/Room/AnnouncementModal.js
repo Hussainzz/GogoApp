@@ -28,6 +28,7 @@ export default function AnnouncementModal({ closeModal, rToken }) {
   const [schedulePostDate, setSchedulePostDate] = useState('');
 
   const handleSchedulePostDate = (start, end) => {
+    console.log(start.format('MM-DD-YYYY hh:mm A'));
     setSchedulePostDate(start.format('MM-DD-YYYY hh:mm A'))
   };
 
