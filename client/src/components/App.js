@@ -5,7 +5,7 @@ import {BrowserRouter as Router, Switch, Route} from 'react-router-dom'
 //import { getLoggedInUserAsync } from '../redux/userSlice';
 import Login from './authentication/Login';
 import PrivateRoute from './authentication/PrivateRoute';
-//import Signup from './authentication/Signup';
+import Signup from './authentication/Signup';
 import Dashboard from './Dashboard';
 import Landing from './Landing';
 //import { setAuthToken } from '../redux/authSlice';
@@ -48,7 +48,7 @@ function App() {
               <PrivateRoute exact path="/gogo-room/:roomToken"  component={GoGoRoomDashboard}/>
 
               <Route path="/login" exact component={Login}/>
-              {/* <Route path="/signup" exact component={Signup}/> */}
+              <Route path="/signup" exact component={Signup}/>
               <Route path="/forgot-password" exact component={ForgotPassword}/>
               <Route path="/reset-password/:resetPasswordToken" exact component={ResetPassword}/>
 
