@@ -1,5 +1,5 @@
 const Notification = require("../models/Notification");
-const Redis  = require("../helpers/Redis");
+const Cache  = require("../helpers/Cache");
 
 module.exports = {
     createNotification,
@@ -22,7 +22,7 @@ async function createNotification(senderId, receiverIds, message){
 }
 
 async function getReceivedNotifications(receiverId) {
-    const notifications = await Redis.getOrSetCache(`notifications:${receiverId}`,3600,async () => {
+    const notifications = await Cache.getOrSetCache(`notifications:${receiverId}`,3600,async () => {
         const notificationData = await getReceivedNotificationsFromDB(receiverId);
         console.log(notificationData)
         return notificationData;

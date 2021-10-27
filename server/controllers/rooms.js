@@ -3,9 +3,13 @@ const moment = require('moment');
 //const request = require('request');
 const axios = require('axios');
 const randomstring = require("randomstring");
+
+const Cache  = require("../helpers/Cache");
+const cacheService = Cache.getServiceName();
+const clientCache = Cache.getConnection();
+
 const User = require("../models/User");
 const Room = require("../models/Room");
-const Redis  = require("../helpers/Redis");
 const RoomDiscussionMessages = require("../models/RoomDiscussionMessages");
 const RoomDiscussion = require("../models/RoomDiscussion");
 const RoomInvitation = require('../models/RoomInvitation');
@@ -14,7 +18,7 @@ const AnnouncementComment = require('../models/AnnouncementComment');
 module.exports = {
   getUserRooms,
   inviteRoomParticipantsAndNotify,
-  createRoomDataRedis,
+  createRoomDataCache,
   getRoomDataFromRedis,
   deleteUserFromRoom,
   createConfRoomDataRedis,
@@ -22,6 +26,7 @@ module.exports = {
   deleteUserFromGogoConfRoom,
   createRoomDiscussion,
   getRoomDiscussionFromRedis,
+  getRoomDiscussionFromNodeCache,
   moveDiscussionsToDB,
   getRoomByToken,
   getUserRoomInvitations,
@@ -31,13 +36,14 @@ module.exports = {
   postScheduledAnnouncements,
   getRoomAnnouncements,
   getRoomAnnouncementsPaginate,
+  getRoomAnnouncementsPaginateNodeCache,
   createAnnouncementComment,
   getRoomAnnouncementsFromDB,
   deleteRoomById
 };
 
 async function inviteRoomParticipantsAndNotify(roomId, participants) {
-  const redisClient = Redis.getConnection();
+  //const redisClient = Redis.getConnection();
   let userRoomInvites = [];
   let participantsNotification = [];
   const room = await Room.findById(roomId);
@@ -55,8 +61,10 @@ async function inviteRoomParticipantsAndNotify(roomId, participants) {
             user:user._id,
             read:false
           })
-          redisClient.del(`notifications:${user._id}`);
-          redisClient.del(`userRoomInvitations:${user._id}`);
+          Cache.deleteKeyFromCache(`notifications:${user._id}`);
+          Cache.deleteKeyFromCache(`userRoomInvitations:${user._id}`);
+          // redisClient.del(`notifications:${user._id}`);
+          // redisClient.del(`userRoomInvitations:${user._id}`);
         }
       }
     }
@@ -70,7 +78,7 @@ async function inviteRoomParticipantsAndNotify(roomId, participants) {
 }
 
 async function getUserRooms(userId) {
-    const rooms = await Redis.getOrSetCache(`userCreatedRooms:${userId}`,3600,async () => {
+    const rooms = await Cache.getOrSetCache(`userCreatedRooms:${userId}`,3600,async () => {
         const roomData = await getUserRoomsFromDB(userId);
         return roomData;
     })
@@ -83,7 +91,7 @@ async function getUserRoomsFromDB(userId){
 }
 
 async function getUserEnrolledRooms(userId) {
-  const rooms = await Redis.getOrSetCache(`userCreatedEnrolledRooms:${userId}`,3600,async () => {
+  const rooms = await Cache.getOrSetCache(`userCreatedEnrolledRooms:${userId}`,3600,async () => {
       const roomData = await getUserEnrolledRoomsFromDB(userId);
       return roomData;
   })
@@ -95,95 +103,154 @@ async function getUserEnrolledRoomsFromDB(userId){
   return rooms;
 }
 
-async function createRoomDataRedis(roomData,socketId){
+async function createRoomDataCache(roomData,socketId){
     try {
-      const redisClient = Redis.getConnection();
+
       const newUserData = {
           userId: roomData.userId,
           socketId: socketId,
           name:roomData.name
       }
-      const newInsertedUser = await new Promise(async (resolve, reject) => {
-          await redisClient.get(`room:${roomData.room}`, async (err, data) =>{
-            if(err) return reject(null);
-            
-            if(data != null){
-              const currentJoinedUsers = JSON.parse(data).joinedUsers.filter(u => u.userId !== roomData.userId);
-              const newJoinedUsers = [
-                  ...currentJoinedUsers,
-                  newUserData
-              ];
-              const newRoomData = {
-                  joinedUsers: newJoinedUsers,
-              }
-              redisClient.set(`room:${roomData.room}`, JSON.stringify(newRoomData));
-              return resolve(newUserData);
-            }else{
-               redisClient.set(`room:${roomData.room}`, JSON.stringify({
-                joinedUsers: [newUserData],
-              }));
-              return resolve(JSON.stringify({
-                joinedUsers: [newUserData],
-              }));
-            }
+      let newInsertedUser = [];
+      const roomCacheKey = `room:${roomData.room}`;
+      switch(cacheService){
+        case 'REDIS':
+          newInsertedUser = await new Promise(async (resolve, reject) => {
+            await clientCache.get(roomCacheKey, async (err, data) =>{
+              if(err) return reject(null);
+              return await resolve(roomDataCache(roomCacheKey, newUserData, data,roomData))
+            });
           });
-      })
+        break;
+
+        case 'NODECACHE':
+          newInsertedUser = await new Promise(async (resolve, reject) => {
+            const data = await clientCache.get(roomCacheKey);
+            return await resolve(roomDataCache(roomCacheKey, newUserData, data,roomData))
+          });
+        break
+      }
       return newInsertedUser;
     }catch(e){
+      console.log(e);
       return null;
     }
     
 }
 
-async function getRoomDataFromRedis(room){
-    const redisClient = Redis.getConnection();
+async function roomDataCache(roomCacheKey, newUserData, data, roomData){
+    if(data != null){
+      const currentJoinedUsers = JSON.parse(data).joinedUsers.filter(u => u.userId !== roomData.userId);
+      const newJoinedUsers = [
+          ...currentJoinedUsers,
+          newUserData
+      ];
+      const newRoomData = {
+          joinedUsers: newJoinedUsers,
+      }
+      clientCache.set(roomCacheKey, JSON.stringify(newRoomData));
+      return newUserData;
+    }else{
+      clientCache.set(roomCacheKey, JSON.stringify({
+        joinedUsers: [newUserData],
+      }));
+      return JSON.stringify({
+        joinedUsers: [newUserData],
+      });
+    }
+}
 
-    const roomData = await new Promise( async (resolve, reject) =>{
-        await redisClient.get(`room:${room}`, (err, data) =>{
-          if(err) return reject(null); 
-                  
-          if(data != null){
-              return resolve(data);
-          }else{
-            return reject(null);
+async function getRoomDataFromRedis(room){
+   try{
+      const roomCacheKey = `room:${room}`;
+      const roomData = await new Promise( async (resolve, reject) =>{
+          switch(cacheService){
+            case 'REDIS':
+              await clientCache.get(roomCacheKey, (err, data) =>{
+                if(err) return reject(null); 
+                        
+                if(data != null){
+                    return resolve(data);
+                }else{
+                  return reject(null);
+                }
+              });
+            break
+
+            case 'NODECACHE':
+              const data = await clientCache.get(roomCacheKey); 
+              if(data != undefined){
+                  return resolve(data);
+              }else{
+                return reject(null);
+              }
+            break;
           }
-        });
+      });
+      console.log(roomData)
+      return roomData;
+   }catch(err){
+      console.log(err);
+   }
+}
+
+async function deleteUserFromRoom(socket, room){
+    const roomCacheKey = `room:${room}`;
+    const roomData = await new Promise( async (resolve, reject) =>{
+        switch(cacheService){
+          case 'REDIS':
+            await clientCache.get(roomCacheKey, (err, data) =>{
+              if(err) return reject(null);
+              
+              const deleteUser = deleteRoomUser(roomCacheKey,data,socket);
+              if(deleteUser != null){
+                return resolve(deleteUser);
+              }else{
+                return reject(null)
+              }
+              
+            });
+          break;
+
+          case 'NODECACHE':
+            const data = await clientCache.get(roomCacheKey);
+            const deleteUser = deleteRoomUser(roomCacheKey,data,socket);
+            if(deleteUser != null){
+              return resolve(deleteUser);
+            }else{
+              return reject(null)
+            }
+          break;
+        }
+
+        
     })
     return roomData;
 }
 
-async function deleteUserFromRoom(socket, room){
-    const redisClient = Redis.getConnection();
-
-    const roomData = await new Promise( async (resolve, reject) =>{
-        await redisClient.get(`room:${room}`, (err, data) =>{
-          if(err) return reject(null);
-          
-          if(data != null){
-              const joinedUsers = JSON.parse(data).joinedUsers.filter(u => u.socketId !== socket);
-              const newRoomData = {
-                joinedUsers: joinedUsers,
-              }
-              redisClient.set(`room:${room}`, JSON.stringify(newRoomData));
-              return resolve(newRoomData);
-          }else{
-            return reject(null);
-          }
-        });
-    })
-    return roomData;
+async function deleteRoomUser(roomCacheKey,data,socket) {
+  if(data != null){
+    const joinedUsers = JSON.parse(data).joinedUsers.filter(u => u.socketId !== socket);
+    const newRoomData = {
+      joinedUsers: joinedUsers,
+    }
+    clientCache.set(roomCacheKey, JSON.stringify(newRoomData));
+    return newRoomData;
+  }else{
+    return null;
+  }
 }
 
 async function createConfRoomDataRedis(roomData,socketId){
   try {
-    const redisClient = Redis.getConnection();
+
     const newUserData = {
         userId: /* roomData.userId */socketId,
         socketId: socketId,
         name:roomData.name
     }
     const newInsertedUser = await new Promise(async (resolve, reject) => {
-        await redisClient.get(`gogoConf:${roomData.room}`, async (err, data) =>{
+        await clientCache.get(`gogoConf:${roomData.room}`, async (err, data) =>{
           if(err) return reject(null);
           
           if(data != null){
@@ -195,10 +262,10 @@ async function createConfRoomDataRedis(roomData,socketId){
             const newRoomData = {
                 joinedUsers: newJoinedUsers,
             }
-            redisClient.set(`gogoConf:${roomData.room}`, JSON.stringify(newRoomData));
+            clientCache.set(`gogoConf:${roomData.room}`, JSON.stringify(newRoomData));
             return resolve(newUserData);
           }else{
-             redisClient.set(`gogoConf:${roomData.room}`, JSON.stringify({
+             clientCache.set(`gogoConf:${roomData.room}`, JSON.stringify({
               joinedUsers: [newUserData],
             }));
             return resolve(JSON.stringify({
@@ -224,10 +291,8 @@ async function getRoomByToken(roomToken){
 }
 
 async function getConfRoomDataFromRedis(room){
-  const redisClient = Redis.getConnection();
-
   const roomData = await new Promise( async (resolve, reject) =>{
-      await redisClient.get(`gogoConf:${room}`, (err, data) =>{
+      await clientCache.get(`gogoConf:${room}`, (err, data) =>{
         if(err) return reject(null); 
                 
         if(data != null){
@@ -241,10 +306,8 @@ async function getConfRoomDataFromRedis(room){
 }
 
 async function deleteUserFromGogoConfRoom(socket, room){
-  const redisClient = Redis.getConnection();
-
   const roomData = await new Promise( async (resolve, reject) =>{
-      await redisClient.get(`gogoConf:${room}`, (err, data) =>{
+      await clientCache.get(`gogoConf:${room}`, (err, data) =>{
         if(err) return reject(null);
         
         if(data != null){
@@ -253,7 +316,7 @@ async function deleteUserFromGogoConfRoom(socket, room){
             const newRoomData = {
               joinedUsers: joinedUsers,
             }
-            redisClient.set(`gogoConf:${room}`, JSON.stringify(newRoomData));
+            clientCache.set(`gogoConf:${room}`, JSON.stringify(newRoomData));
             return resolve(newRoomData);
         }else{
           return reject(null);
@@ -264,93 +327,122 @@ async function deleteUserFromGogoConfRoom(socket, room){
 }
 
 async function createRoomDiscussion(room,message,user){
-    const redisClient = Redis.getConnection();
-    const roomData = await Room.findOne({roomToken:room});
-    const random = randomstring.generate({
-      length: 5,
-      charset: 'alphabetic'
-    });
-    // console.log(mongoose.isValidObjectId(user.userId));return;
-    if(roomData){
-        const redisDiscussionKey = `discussion:${room}`;
-        const redisDiscussionStoreKey = `discussionStore`;
-        const now = Date.now();
-        const today = new Date(now);
-        let newMessage = {
-            sender: user.userId,
-            name: user.name,
-            message:message,
-            sentOn: today.toISOString(),
-            cuid:random
-        }
-       const discussion = await new Promise( async (resolve, reject) =>{
-
-          await redisClient.exists(redisDiscussionKey, (err, exists) => {
-              if(err) return reject(null);
-              if(exists){
-                  redisClient.zcard(redisDiscussionKey,(err, count) =>{
-                      redisClient.zadd(redisDiscussionKey, count, JSON.stringify(newMessage))
-                      redisClient.expire(redisDiscussionKey,900)
-                      return resolve(newMessage);
-                  });
-              }else{
-                  redisClient.zadd(redisDiscussionKey, 0, JSON.stringify(newMessage))
-                  redisClient.expire(redisDiscussionKey,900)
-                  return resolve(newMessage);
-              }
-          }); 
-        });
-          /*   await redisClient.get(redisDiscussionKey,(err, data) =>{
-              if(err) return reject(null);
-            
-              if(data){
-                  const d = JSON.parse(data);
-                  d.push(newMessage);
-                  redisClient.setex(redisDiscussionKey,900, JSON.stringify(d));
-                  return resolve(newMessage);
-              }else{
-                  redisClient.setex(redisDiscussionKey,900, JSON.stringify([newMessage]));
-                  return resolve(newMessage);
-              }
-          }) */
-
-       //create discussion store
-       const result = await discussion;
-       if(result !== null){
-          const newDiscussionStore = await new Promise( async (resolve, reject) =>{
-              await redisClient.get(redisDiscussionStoreKey,(err, data) =>{
-                  if(err) return reject(null);
-                  newMessage['roomId'] = roomData._id;
-                  if(data){
-                      const d = JSON.parse(data);
-                      if(d[room]){
-                        d[room] = [...d[room], newMessage];
-                      }else{
-                        d[room] = [newMessage];
-                      }
-                      redisClient.set(redisDiscussionStoreKey, JSON.stringify(d));
-                      return resolve(newMessage);
-                  }else{
-                      const initDiscussionStore = {};
-                      initDiscussionStore[room] = [newMessage];
-                      redisClient.set(redisDiscussionStoreKey, JSON.stringify(initDiscussionStore));
-                      return resolve(newMessage);
-                  }
-              })
-          })
-          const msg = await newDiscussionStore;
-          if(msg !== null){
-              return msg;
+    try{
+      const roomData = await Room.findOne({roomToken:room});
+      const random = randomstring.generate({
+        length: 5,
+        charset: 'alphabetic'
+      });
+      console.log(roomData);
+      // console.log(mongoose.isValidObjectId(user.userId));return;
+      if(roomData){
+          const redisDiscussionKey = `discussion:${room}`;
+          const redisDiscussionStoreKey = `discussionStore`;
+          const discussionStoreCacheExp = 900;
+          const now = Date.now();
+          const today = new Date(now);
+          let newMessage = {
+              sender: user.userId,
+              name: user.name,
+              message:message,
+              sentOn: today.toISOString(),
+              cuid:random
           }
-         return false;
-       }
+         const discussion = await new Promise( async (resolve, reject) =>{
+            switch(cacheService){
+              case 'REDIS':
+                await clientCache.exists(redisDiscussionKey, (err, exists) => {
+                    if(err) return reject(null);
+                    if(exists){
+                        clientCache.zcard(redisDiscussionKey,(err, count) =>{
+                            clientCache.zadd(redisDiscussionKey, count, JSON.stringify(newMessage))
+                            clientCache.expire(redisDiscussionKey,discussionStoreCacheExp)
+                            return resolve(newMessage);
+                        });
+                    }else{
+                        clientCache.zadd(redisDiscussionKey, 0, JSON.stringify(newMessage))
+                        clientCache.expire(redisDiscussionKey,discussionStoreCacheExp)
+                        return resolve(newMessage);
+                    }
+                }); 
+              break;
+              case 'NODECACHE':
+                const  exists = clientCache.has(redisDiscussionKey);
+                if(exists){
+                  const data = clientCache.get(redisDiscussionKey);
+                  if(data !== undefined){
+                    const discussionData = JSON.parse(data);
+                    clientCache.set(redisDiscussionKey,JSON.stringify([
+                      ...discussionData,
+                      newMessage
+                    ]),discussionStoreCacheExp);
+                    return resolve(newMessage);
+                  }else{
+                    clientCache.set(redisDiscussionKey,JSON.stringify([newMessage]),discussionStoreCacheExp);
+                    return resolve(newMessage);
+                  }
+                }else{
+                  clientCache.set(redisDiscussionKey,JSON.stringify([newMessage]),discussionStoreCacheExp);
+                  return resolve(newMessage);
+                }
+              break;
+            }
+          });
+          
+          console.log(await discussion);
+  
+         //create discussion store
+         const result = await discussion;
+         if(result !== null){
+            const newDiscussionStore = await new Promise( async (resolve, reject) =>{
+              newMessage['roomId'] = roomData._id;
+              switch(cacheService){
+                case 'REDIS':
+                  await clientCache.get(redisDiscussionStoreKey,(err, data) =>{
+                      if(err) return reject(null);
+                      return resolve(buildDiscussionStoreData(room,redisDiscussionStoreKey,newMessage, data));
+                  });
+                break;
+  
+                case 'NODECACHE': 
+                  const data = await clientCache.get(redisDiscussionStoreKey);
+                  return resolve(buildDiscussionStoreData(room,redisDiscussionStoreKey,newMessage, data));
+                break;
+              }
+            })
+            const msg = await newDiscussionStore;
+            if(msg !== null){
+                return msg;
+            }
+           return false;
+         }
+      }
+      return false;
+    }catch(err){
+      console.log(err);
+      return false;
     }
-    return false;
+}
+
+async function buildDiscussionStoreData(room,redisDiscussionStoreKey,newMessage, data){
+  if(data != null){
+    const d = JSON.parse(data);
+    if(d[room]){
+      d[room] = [...d[room], newMessage];
+    }else{
+      d[room] = [newMessage];
+    }
+    clientCache.set(redisDiscussionStoreKey, JSON.stringify(d));
+    return newMessage;
+  }else{
+      const initDiscussionStore = {};
+      initDiscussionStore[room] = [newMessage];
+      clientCache.set(redisDiscussionStoreKey, JSON.stringify(initDiscussionStore));
+      return newMessage;
+  }
 }
 
 async function getRoomDiscussionFromRedis(room, page, limit){
-  const redisClient = Redis.getConnection();
-
   const roomData = await Room.find({roomToken:room});
   const startIndex = (page - 1) * limit;
   let endIndex = page * limit;
@@ -362,7 +454,7 @@ async function getRoomDiscussionFromRedis(room, page, limit){
   if(roomData){
     const redisDiscussionKey = `discussion:${room}`;
 
-    const isDiscussionInRedis = await redisClient.zcard(redisDiscussionKey, async(err, exists) => {
+    const isDiscussionInRedis = await clientCache.zcard(redisDiscussionKey, async(err, exists) => {
       if(err) return false;
       if(exists) {
         if(endIndex < exists){
@@ -380,7 +472,7 @@ async function getRoomDiscussionFromRedis(room, page, limit){
     //console.log(startIndex, endIndex);
     if(isDiscussionInRedis){
       const discussion = await new Promise( async (resolve, reject) =>{
-        await redisClient.zrevrange([redisDiscussionKey, startIndex, endIndex-1], (err, data) => {
+        await clientCache.zrevrange([redisDiscussionKey, startIndex, endIndex-1], (err, data) => {
               if(err) return reject([]);
               if(data){
                 const discussionMessagesCache = [];
@@ -417,8 +509,8 @@ async function getRoomDiscussionFromRedis(room, page, limit){
                     })
                   };
                   discussionMessagesDB.push(nM)
-                  redisClient.zadd(redisDiscussionKey, i, JSON.stringify(nM))
-                  redisClient.expire(redisDiscussionKey,900)
+                  clientCache.zadd(redisDiscussionKey, i, JSON.stringify(nM))
+                  clientCache.expire(redisDiscussionKey,900)
                 });
                 return resolve(discussionMessagesDB.reverse().slice(startIndex, endIndex).reverse());
             }
@@ -431,19 +523,106 @@ async function getRoomDiscussionFromRedis(room, page, limit){
   return discussionData;
 }
 
+async function getRoomDiscussionFromNodeCache(room, page, limit){
+  const roomData = await Room.find({roomToken:room});
+  const startIndex = (page - 1) * limit;
+  let endIndex = page * limit;
+  
+  const discussionData = {
+    hasMoreMessages:false,
+    data : []
+  };
+  if(roomData){
+    const discussionCKey = `discussion:${room}`;
+
+    let isDiscussionInCache = false;
+    const discussionFromCache = await clientCache.get(discussionCKey);
+    if(discussionFromCache !== undefined){
+      isDiscussionInCache = true;
+      const disData = JSON.parse(discussionFromCache);
+
+      if(endIndex < disData.length){
+        discussionData['hasMoreMessages'] = true;
+      }
+
+      if(endIndex > disData.length){
+        endIndex = disData.length;
+      }
+    }
+    console.log(startIndex, endIndex);
+    console.log(isDiscussionInCache);
+    if(isDiscussionInCache){
+      const parsedDiscussion = JSON.parse(discussionFromCache);
+      discussionData['data'] = parsedDiscussion.reverse().slice(startIndex, endIndex).reverse();
+    }
+    console.log(discussionData);
+
+    //get data from db
+    if(!discussionData['data'].length){
+        const discussionDB = await new Promise(async (resolve, reject) => {
+          const discussion = await RoomDiscussion.findOne({roomToken:room});
+          if(discussion){
+            const discussionMessages = await RoomDiscussionMessages.find({discussionId:discussion._id}).populate('sender','name');
+            const discussionMessagesDB = [];
+            if(discussionMessages){
+                if(endIndex < discussionMessages.length){
+                  discussionData['hasMoreMessages'] = true;
+                }
+                discussionMessages.forEach((m,i) => {
+                  let nM = {
+                    sender: m.sender._id,
+                    name: m.sender.name,
+                    message:m.message,
+                    sentOn:m.sentOn,
+                    cuid:randomstring.generate({
+                      length: 5,
+                      charset: 'alphabetic'
+                    })
+                  };
+                  discussionMessagesDB.push(nM)
+                });
+                clientCache.set(discussionCKey, JSON.stringify(discussionMessagesDB),900)
+                return resolve(discussionMessagesDB.reverse().slice(startIndex, endIndex).reverse());
+            }
+          }
+          return resolve([]);
+        });
+        discussionData['data'] = await discussionDB;
+    }
+  }
+  return discussionData;
+}
+
 async function moveDiscussionsToDB(){
-  const redisClient = Redis.getConnection();
   const redisDiscussionStoreKey = `discussionStore`;
 
   const discussion = await new Promise( async (resolve, reject) =>{
-    await redisClient.get(redisDiscussionStoreKey,(err, data) =>{
-        if(err) return reject([]);
-        if(data){
+    switch(cacheService){
+      case 'REDIS':
+        await clientCache.get(redisDiscussionStoreKey,(err, data) =>{
+          if(err) return reject([]);
+          if(data){
+              const d = JSON.parse(data);
+              return resolve(d);
+          }
+          return resolve([]);
+        });
+      break;
+      case 'NODECACHE':
+        try{
+          const data = await clientCache.get(redisDiscussionStoreKey);
+          if(data !== undefined){
             const d = JSON.parse(data);
             return resolve(d);
+          }else{
+            return resolve([]);
+          }
+        }catch(err){
+          return resolve([]);
         }
-        return resolve([]);
-    })
+      break;
+    }
+    
   })
   const discussionData = await discussion;
 
@@ -478,7 +657,7 @@ async function moveDiscussionsToDB(){
       }
       let insertingMessages = await RoomDiscussionMessages.insertMany(discussionMessagesToInsert);
     }
-    redisClient.del(redisDiscussionStoreKey);
+    Cache.deleteKeyFromCache(redisDiscussionStoreKey);
     console.log('Discussion Data To DB Moved');
   }else{
     console.log('No Discussion Data To Move to DB');
@@ -487,7 +666,7 @@ async function moveDiscussionsToDB(){
 
 
 async function getUserRoomInvitations(userId) {
-  const roomInvitations = await Redis.getOrSetCache(`userRoomInvitations:${userId}`,3600,async () => {
+  const roomInvitations = await Cache.getOrSetCache(`userRoomInvitations:${userId}`,3600,async () => {
       const roomInvitationData = await getUserRoomInvitationsFromDB(userId);
       return roomInvitationData;
   })
@@ -501,7 +680,6 @@ async function getUserRoomInvitationsFromDB(userId){
 
 async function enrollToPrivateRoom(roomToken,userId,action){
   try {
-    const redisClient = Redis.getConnection();
     const room  = await getRoomByToken(roomToken);
     if(room != null){
         const invitation = await RoomInvitation.findOne({ to: userId, room:room._id, enrolled:0 });
@@ -514,8 +692,8 @@ async function enrollToPrivateRoom(roomToken,userId,action){
             invitation.enrolled = 2;
           }
           await invitation.save();
-          redisClient.del(`userRoomInvitations:${userId}`);
-          redisClient.del(`userCreatedEnrolledRooms:${userId}`);
+          Cache.deleteKeyFromCache(`userRoomInvitations:${userId}`);
+          Cache.deleteKeyFromCache(`userCreatedEnrolledRooms:${userId}`);
           return true
         }
     }
@@ -568,22 +746,21 @@ async function getScheduledAnnouncements(){
 async function postScheduledAnnouncements(){
   try {
     const API_URL = process.env.API_BASE_URL;  
-    const redisClient = Redis.getConnection();
     const pendingAnnouncements = await getScheduledAnnouncements();
     
 
     if(pendingAnnouncements.length){
       //let current = new Date().toISOString();
-      let current = moment().seconds(0).milliseconds(0).toISOString();
+      let current = moment().tz(process.env.TIMEZONE).seconds(0).milliseconds(0).format();
       console.log(`Current: ${current}`);
       pendingAnnouncements.forEach( async (a) => {
-          let ann = moment(a.announceOn).seconds(0).milliseconds(0).toISOString();
+          let ann = moment(a.announceOn).tz(process.env.TIMEZONE).seconds(0).milliseconds(0).format();
           console.log(`announcement ${a.title}: ${ann}`);
           if(ann === current){
               console.log(`announcement ${a.title}: POSTING NOW`);
               a.posted = true;
               await a.save();
-              redisClient.del(`roomAnnouncements:${a.room.roomToken}`);
+              Cache.deleteKeyFromCache(`roomAnnouncements:${a.room.roomToken}`);
 
               const URI  =`${API_URL}/api/rooms/triggerFetchRoomAnnouncements/${a.room.roomToken}/${a._id}`;
               try{
@@ -592,12 +769,6 @@ async function postScheduledAnnouncements(){
               }catch(e){
                 console.log(e)
               }
-             /*  await request({
-                  url: `${API_URL}/api/rooms/triggerFetchRoomAnnouncements/${a.room.roomToken}/${a._id}`,
-                  method: 'GET'
-              }, function (error, response, body) {
-                  console.log({error: error, response: response, body: body});
-              }); */
           }
       })
     }
@@ -700,8 +871,6 @@ async function populateAnnouncementComments(announcements){
 }
 
 async function getRoomAnnouncementsPaginate(room, page, limit){
-  const redisClient = Redis.getConnection();
-
   const roomData = await Room.findOne({roomToken:room});
   const startIndex = (page - 1) * limit;
   let endIndex = page * limit;
@@ -714,7 +883,7 @@ async function getRoomAnnouncementsPaginate(room, page, limit){
     const redisAnnouncementKey = `roomAnnouncements:${room}`;
 
     const isAnnouncementInRedis = await new Promise( async (resolve, reject) =>{
-      await redisClient.zcard(redisAnnouncementKey, async(err, exists) => {
+      await clientCache.zcard(redisAnnouncementKey, async(err, exists) => {
           if(err) return resolve(false);
        
           if(exists) {
@@ -736,7 +905,7 @@ async function getRoomAnnouncementsPaginate(room, page, limit){
    
     if(isAnnouncementInRedis){
       const announcement = await new Promise( async (resolve, reject) =>{
-        await redisClient.zrevrange([redisAnnouncementKey, startIndex, endIndex-1], (err, data) => {
+        await clientCache.zrevrange([redisAnnouncementKey, startIndex, endIndex-1], (err, data) => {
               if(err) return reject([]);
               if(data){
                 const announcementDataCache = [];
@@ -765,8 +934,8 @@ async function getRoomAnnouncementsPaginate(room, page, limit){
                 }
                 /* announcements.forEach((m,i) => { */  for(const [i, m] of announcements.entries()){
                   allAnnouncementsDB.push(m)
-                  redisClient.zadd(redisAnnouncementKey, i, JSON.stringify(m))
-                  redisClient.expire(redisAnnouncementKey,900)
+                  clientCache.zadd(redisAnnouncementKey, i, JSON.stringify(m))
+                  clientCache.expire(redisAnnouncementKey,900)
                 };
                 return resolve(allAnnouncementsDB.reverse().slice(startIndex, endIndex));
             }
@@ -781,9 +950,84 @@ async function getRoomAnnouncementsPaginate(room, page, limit){
   return announcementData;
 }
 
+async function getRoomAnnouncementsPaginateNodeCache(room, page, limit){
+  const roomData = await Room.findOne({roomToken:room});
+  const startIndex = (page - 1) * limit;
+  let endIndex = page * limit;
+  
+  announcementData = {
+    hasMoreMessages:false,
+    data : []
+  };
+  if(roomData){
+    const redisAnnouncementKey = `roomAnnouncements:${room}`;
+
+    const isAnnouncementInRedis = await new Promise( async (resolve, reject) =>{
+        try{
+          const announcementsFromCache = await clientCache.get(redisAnnouncementKey);
+          if(announcementsFromCache !== undefined){
+            const annsData = JSON.parse(announcementsFromCache);
+      
+            if(endIndex < annsData.length){
+              announcementData['hasMoreMessages'] = true;
+            }
+      
+            if(endIndex > annsData.length){
+              endIndex = annsData.length;
+            }
+            return resolve(true)
+          }else{
+            return resolve(false)
+          }
+        }catch(err){
+          return reject(false)
+        }
+    });
+
+   
+    if(isAnnouncementInRedis){
+      const announcement = await new Promise( async (resolve, reject) =>{
+        let announcementDataCache = [];
+        const data = await clientCache.get(redisAnnouncementKey);
+        if(data !== undefined){
+          announcementDataCache = JSON.parse(data);
+          announcementDataCache = announcementDataCache.reverse().slice(startIndex, endIndex)
+        }
+        return resolve(announcementDataCache);
+      });
+      announcementData['data'] = await announcement;
+    }
+    
+      //get data from db
+      if(!announcementData['data'].length){
+         const announcementDB = await new Promise(async (resolve, reject) => {
+          
+            const announcements = await getRoomAnnouncementsFromDB(roomData._id);
+            
+            const allAnnouncementsDB = [];
+            if(announcements){
+                if(endIndex < announcements.length){
+                  announcementData['hasMoreMessages'] = true;
+                }
+                for(const [i, m] of announcements.entries()){
+                  allAnnouncementsDB.push(m)
+                };
+                clientCache.set(redisAnnouncementKey, JSON.stringify(allAnnouncementsDB), 900)
+                return resolve(allAnnouncementsDB.reverse().slice(startIndex, endIndex));
+            }
+            return resolve([]);
+         });
+
+         announcementData['data'] = await announcementDB;
+      }
+   
+  }
+  return announcementData;
+}
+
 async function createAnnouncementComment(announcementId,message,gogoUserId){
    try {
-      const redisClient = Redis.getConnection();
+      // const redisClient = Redis.getConnection();
       const announcement = await Announcement.findOne({_id: mongoose.Types.ObjectId(announcementId)});
 
       if(announcement !== null){
@@ -802,15 +1046,6 @@ async function createAnnouncementComment(announcementId,message,gogoUserId){
             });
           });
           const comment = await s;
-       /*    const redisKey = `roomAnnouncementComment:${announcement._id}`;
-          await redisClient.get(redisKey, async (err, data) =>{
-            if(err) return reject(null);
-            if(data != null){
-              redisClient.set(redisKey, JSON.stringify([comment, ...JSON.parse(data)]));
-            }else{
-              redisClient.set(redisKey, JSON.stringify([comment]));
-            }
-          }); */
           return comment;
       }
       return null;

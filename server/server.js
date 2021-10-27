@@ -18,7 +18,7 @@ const usersRoutes = require('./routes/users');
 const RoomsRoutes = require('./routes/rooms');
 const NotificationRoutes = require('./routes/notifications');
 const { addOnlineUser,deleteOnlineUserBySocketId } = require("./controllers/users");
-const { createRoomDataRedis,getRoomDataFromRedis,deleteUserFromRoom, createRoomDiscussion } = require("./controllers/rooms");
+const { createRoomDataCache,getRoomDataFromRedis,deleteUserFromRoom, createRoomDiscussion } = require("./controllers/rooms");
 const { moveDiscussionsToDBJob,postScheduledAnnouncementsJob } = require("./crons/CronJobs");
 
 
@@ -111,7 +111,7 @@ connectDB(() => {
         console.log(`connected to room socket ${socket.id}`)
     
         socket.on("join-room", async (roomData,cb)=>{
-            const newRoomUser = await createRoomDataRedis(roomData,socket.id);
+            const newRoomUser = await createRoomDataCache(roomData,socket.id);
             if(newRoomUser){
             socket.join(roomData.room);
             try {
@@ -180,7 +180,7 @@ connectDB(() => {
       console.log(`connected to gogo room socket ${socket.id}`)
 
       socket.on("join-room", async (roomData,cb)=>{
-        const newRoomUser = await createRoomDataRedis(roomData,socket.id);
+        const newRoomUser = await createRoomDataCache(roomData,socket.id);
             if(newRoomUser){
                 socket.join(roomData.room);
                 try {

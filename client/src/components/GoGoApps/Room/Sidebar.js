@@ -5,7 +5,7 @@ import { IoMdExit } from "react-icons/io";
 import AnnouncementModal from './AnnouncementModal';
 import '../../../css/modal.css'
 
-const NOTIFICATIONS_KEY = 'notifications'
+//const NOTIFICATIONS_KEY = 'notifications'
 const JOINED_USERS_KEY = 'people'
 
 export default function Sidebar({ roomToken,roomData,leaveRoom,currentUserId }) {

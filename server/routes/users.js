@@ -2,9 +2,10 @@ const express = require('express')
 const router = express.Router();
 const User = require('../models/User');
 const verifyToken = require('../middleware/verifyToken');
-const Redis  = require("../helpers/Redis");
-const { addOnlineUser } = require('../controllers/users');
-const redisClient = Redis.getConnection();
+const Cache  = require("../helpers/Cache");
+const { addOnlineUser, getOnlineUsers } = require('../controllers/users');
+const cacheClient = Cache.getConnection();
+const cacheService = Cache.getServiceName();
 
 router.get('/me',verifyToken, async (req, res, next) => {
     try {
@@ -23,32 +24,12 @@ router.get('/me',verifyToken, async (req, res, next) => {
 
 router.post('/online',verifyToken,async (req, res, next) => {
     try {
-        const newEntry = {
-            userId: req.user.userId,
-            socket:req.body.sId    
-        };
-        redisClient.get('onlineUsers', (err, data) =>{
-            if(err){
-                const error = new Error("Online Failed");
-                error.status = "error";
-                return next(error);
-            }
-            if(data != null){
-                const onlineUsers = JSON.parse(data).filter(user => user.userId != req.user.userId);
-                const newOnlineUsers = [
-                    ...onlineUsers,
-                    newEntry
-                ];
-                redisClient.set("onlineUsers", JSON.stringify(newOnlineUsers));
-            }else{
-                redisClient.set("onlineUsers", JSON.stringify([newEntry]));
-            }
-        });
-       
+        addOnlineUser(req.user.userId, req.body.sId)
         res.status(200).json({
             "status":"success"
         });
     } catch (e) {
+        console.log(e);
         const err = new Error("ONline Failed");
         err.status = "error";
         next(err);
@@ -57,27 +38,10 @@ router.post('/online',verifyToken,async (req, res, next) => {
 
 router.get('/online',verifyToken,async (req, res, next) => {
     try {
-       
-        redisClient.get('onlineUsers', (err, data) =>{
-            if(err){
-                const error = new Error("Get Online Failed");
-                error.status = "error";
-                return next(error);
-            }
-            if(data != null){
-                const onlineUsers = JSON.parse(data);
-                return res.status(200).json({
-                    "status":"success",
-                    "data":onlineUsers
-                });
-            }else{
-               return res.status(200).json({
-                    "status":"success",
-                    "data":[]
-               });
-            }
-        });
-        
+     
+        const response = await getOnlineUsers();
+        return res.status(200).json(response);
+
     } catch (e) {
         const err = new Error("Get ONline Failed");
         err.status = "error";
@@ -87,25 +51,44 @@ router.get('/online',verifyToken,async (req, res, next) => {
 
 router.delete('/online',verifyToken,async (req, res, next) => {
     try {
-
-        redisClient.get('onlineUsers', (err, data) =>{
-            if(err){
-                const error = new Error("Delete Online Failed");
-                error.status = "error";
-                return next(error);
-            }
-            if(data != null){
-                const onlineUsers = JSON.parse(data).filter(user => user.userId != req.user.userId);
-                redisClient.set("onlineUsers", JSON.stringify(onlineUsers));
-                return res.status(200).json({
-                    "status":"success"
+        const cacheKey = 'onlineUsers';
+        switch(cacheService){
+            case 'REDIS':
+                cacheClient.get(cacheKey, (err, data) =>{
+                    if(err){
+                        const error = new Error("Delete Online Failed");
+                        error.status = "error";
+                        return next(error);
+                    }
+                    if(data != null){
+                        const onlineUsers = JSON.parse(data).filter(user => user.userId != req.user.userId);
+                        cacheClient.set("onlineUsers", JSON.stringify(onlineUsers));
+                        return res.status(200).json({
+                            "status":"success"
+                        });
+                    }else{
+                        return res.status(200).json({
+                            "status":"failed"
+                        });
+                    }
                 });
-            }else{
-                return res.status(200).json({
-                    "status":"failed"
-                });
-            }
-        });
+            break;
+            case 'NODECACHE':
+                const data = await cacheClient.get(cacheKey);
+                if(data != undefined){
+                    const onlineUsers = JSON.parse(data).filter(user => user.userId != req.user.userId);
+                    cacheClient.set("onlineUsers", JSON.stringify(onlineUsers));
+                    return res.status(200).json({
+                        "status":"success"
+                    });
+                }else{
+                    return res.status(200).json({
+                        "status":"failed"
+                    });
+                }
+            break;
+        }
+     
     } catch(e){
         const err = new Error("Delete ONline Failed");
         err.status = "error";

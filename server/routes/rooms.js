@@ -14,6 +14,7 @@ const { inviteRoomParticipantsAndNotify,
     getUserRooms,
     createRoomDiscussion,
     getRoomDiscussionFromRedis, 
+    getRoomDiscussionFromNodeCache,
     getRoomByToken,
     getUserRoomInvitations,
     enrollToPrivateRoom,
@@ -21,11 +22,18 @@ const { inviteRoomParticipantsAndNotify,
     createAnnouncement,
     getRoomAnnouncements,
     getRoomAnnouncementsPaginate,
+    getRoomAnnouncementsPaginateNodeCache,
     createAnnouncementComment,
     getRoomAnnouncementsFromDB,
     deleteRoomById
 } = require('../controllers/rooms');
-const Redis = require('../helpers/Redis');
+
+const {getOnlineUsersSocketIds} = require('../controllers/users')
+
+const Cache  = require("../helpers/Cache");
+const cacheService = Cache.getServiceName();
+const clientCache = Cache.getConnection();
+
 const { createNotification } = require('../controllers/notification');
 
 //store files
@@ -56,7 +64,7 @@ const discussionFileUploader = multer({
 
 
 router.post('/room',verifyToken, async (req,res,next) => {
-    const redisClient = Redis.getConnection();
+    //const redisClient = Redis.getConnection();
     var io = req.app.get('socketio');
 
     const { error } = createRoomValidation(req.body);
@@ -111,7 +119,8 @@ router.post('/room',verifyToken, async (req,res,next) => {
                 }
             }
         }
-        redisClient.del(`userCreatedRooms:${gogoUserId}`);
+        //redisClient.del(`userCreatedRooms:${gogoUserId}`);
+        Cache.deleteKeyFromCache(`userCreatedRooms:${gogoUserId}`);
         
 
         res.status(200).json({
@@ -274,13 +283,24 @@ router.get('/discussion/:roomToken',verifyToken, async (req, res, next) => {
     const limit = (req.query.limit)? parseInt(req.query.limit):10
     if(roomToken){
         try {
-            const discussion = await getRoomDiscussionFromRedis(roomToken,page,limit);
+            let discussion = [];
+            switch(cacheService){
+                case 'REDIS':
+                    discussion = await getRoomDiscussionFromRedis(roomToken,page,limit);
+                break;
+
+                case 'NODECACHE':
+                    discussion = await getRoomDiscussionFromNodeCache(roomToken,page,limit);
+                break;
+            }
+            
             res.status(200).json({
                 status : "success",
                 hasMoreMessages : discussion['hasMoreMessages'],
                 data:discussion['data']
             });
         } catch (e) {
+            console.log(e);
             const err = new Error("Fetching discussion failed");
             err.status = "error";
             next(err);
@@ -321,25 +341,23 @@ router.post('/discussion/upload',verifyToken, async (req, res, next) => {
 
 
 router.get('/announcements/:roomToken',verifyToken, async(req, res, next) => {
-   /*  try {
-        const roomToken = req.params.roomToken;
-        const roomAnnouncements = await getRoomAnnouncements(roomToken);
-        res.status(200).json({
-            status: "success",
-            data:roomAnnouncements
-        });
-    } catch (e) {
-        const err = new Error("Fetching room announcements failed");
-        err.status = "error";
-        next(err);
-    } */
-
     const roomToken = req.params.roomToken;
     const page = (req.query.page)? parseInt(req.query.page):1
     const limit = (req.query.limit)? parseInt(req.query.limit):10
     if(roomToken){
         try {
-            const announcements = await getRoomAnnouncementsPaginate(roomToken,page,limit);
+            let announcements = [];
+
+            switch(cacheService){
+                case 'REDIS':
+                    announcements = await getRoomAnnouncementsPaginate(roomToken,page,limit);
+                break;
+
+                case 'NODECACHE':
+                    announcements = await getRoomAnnouncementsPaginateNodeCache(roomToken,page,limit);
+                break;
+            }
+
             res.status(200).json({
                 status : "success",
                 hasMoreMessages : announcements['hasMoreMessages'],
@@ -369,7 +387,6 @@ router.post('/announcement',verifyToken, async(req, res, next) => {
             data: []
         }
         let roomSocket = req.app.get('roomSocket');
-        const redisClient = Redis.getConnection();
         const gogoUserId =  req.user.userId;
         const {title, description, roomToken} = req.body;
         const attachment = (req.body.attachment)? req.body.attachment:'';
@@ -384,40 +401,60 @@ router.post('/announcement',verifyToken, async(req, res, next) => {
             posted:(announceOn != null)?false:true,
             announcementBy:gogoUserId,
         },roomToken);
-
+        console.log(`creating NewAnnouncement`);
+        console.log(createNewAnnouncement);
         if(createNewAnnouncement){
             response.status = 'success';
             response.message = 'Announcement created successfully';
             if(announceOn != null){
-                response.message = `Announcement Scheduled and will be posted on ${announceOn}`;
+                const announceOnFormatted = moment(announceOn).tz(process.env.TIMEZONE).seconds(0).milliseconds(0).format('MMMM Do YYYY, h:mm:ss a')
+                response.message = `Announcement Scheduled and will be posted on ${announceOnFormatted}`;
             }else{
-              /*   await redisClient.get(`roomAnnouncements:${roomToken}`,(err ,data) =>{
-                    if(err) return reject(err);
-                    if(data !== null){
-                        const allAnnouncements = JSON.parse(data);
-                        allAnnouncements.push(createNewAnnouncement)
-                        redisClient.set(`roomAnnouncements:${roomToken}`, JSON.stringify(allAnnouncements));
-                    }else{
-                        redisClient.set(`roomAnnouncements:${roomToken}`, JSON.stringify([createNewAnnouncement]));
-                    }
-                }); */
-
+                const exp = 1500;
                 const redisRoomAnnouncementsKey = `roomAnnouncements:${roomToken}`;
                 const announcement = await new Promise( async (resolve, reject) =>{
-                    await redisClient.exists(redisRoomAnnouncementsKey, (err, exists) => {
-                        if(err) return reject(null);
-                        if(exists){
-                            redisClient.zcard(redisRoomAnnouncementsKey,(err, count) =>{
-                                redisClient.zadd(redisRoomAnnouncementsKey, count, JSON.stringify(createNewAnnouncement))
-                                redisClient.expire(redisRoomAnnouncementsKey,1500)
-                                return resolve(createNewAnnouncement);
-                            });
-                        }else{
-                            redisClient.zadd(redisRoomAnnouncementsKey, 0, JSON.stringify(createNewAnnouncement))
-                            redisClient.expire(redisRoomAnnouncementsKey,1500)
-                            return resolve(createNewAnnouncement);
-                        }
-                    }); 
+                    switch(cacheService){
+                        case 'REDIS':
+                            await clientCache.exists(redisRoomAnnouncementsKey, (err, exists) => {
+                                if(err) return reject(null);
+                                if(exists){
+                                    clientCache.zcard(redisRoomAnnouncementsKey,(err, count) =>{
+                                        clientCache.zadd(redisRoomAnnouncementsKey, count, JSON.stringify(createNewAnnouncement))
+                                        clientCache.expire(redisRoomAnnouncementsKey,exp)
+                                        return resolve(createNewAnnouncement);
+                                    });
+                                }else{
+                                    clientCache.zadd(redisRoomAnnouncementsKey, 0, JSON.stringify(createNewAnnouncement))
+                                    clientCache.expire(redisRoomAnnouncementsKey,exp)
+                                    return resolve(createNewAnnouncement);
+                                }
+                            }); 
+                        break;
+
+                        case 'NODECACHE':
+                           try{
+                                const  announcementExists = clientCache.has(redisRoomAnnouncementsKey);
+                                console.log(announcementExists);
+                                if(announcementExists){
+                                    const data = clientCache.get(redisRoomAnnouncementsKey);
+                                    if(data !== undefined){
+                                        const allAnnouncements = JSON.parse(data);
+                                        allAnnouncements.push(createNewAnnouncement)
+                                        clientCache.set(redisRoomAnnouncementsKey, JSON.stringify(allAnnouncements),exp);
+                                    }else{
+                                        clientCache.set(redisRoomAnnouncementsKey, JSON.stringify([createNewAnnouncement]),exp);
+                                    }
+                                    return resolve(createNewAnnouncement);
+                                }else{
+                                    getRoomAnnouncementsPaginateNodeCache(roomToken,1,10)
+                                    return resolve(createNewAnnouncement);
+                                }
+                           }catch(e){
+                               console.log(e);
+                                return reject(null);
+                           }
+                        break;    
+                    }
                 });
                 response.data = [createNewAnnouncement];
                 roomSocket.in(roomToken).emit('post-new-announcement', createNewAnnouncement);
@@ -455,9 +492,7 @@ router.get('/triggerFetchRoomAnnouncements/:roomToken/:aId', async (req,res,next
 
 router.post('/comment',verifyToken, async (req, res, next) => {
     let roomSocket = req.app.get('roomSocket');
-    const redisClient = Redis.getConnection();
     const { error } = createAnnouncementCommentValidation(req.body);
-    
     if (error) {
       const err = new Error(error.details.map(x => x.message).join(', '));
       err.status = "failed";
@@ -476,8 +511,16 @@ router.post('/comment',verifyToken, async (req, res, next) => {
         
         if(announcementComment !== null){
             roomSocket.to(roomToken).emit('update-new-comment', announcementComment);
-            redisClient.del(`roomAnnouncements:${roomToken}`);
-            getRoomAnnouncementsPaginate(roomToken,1,5);
+            Cache.deleteKeyFromCache(`roomAnnouncements:${roomToken}`);
+            switch(cacheService){
+                case 'REDIS':
+                    getRoomAnnouncementsPaginate(roomToken,1,5);
+                break;
+                case 'NODECACHE':
+                    getRoomAnnouncementsPaginateNodeCache(roomToken,1,5);
+                break;
+            }
+           
             res.status(200).json({
                 status: "success",
                 message: "Created Comment",
@@ -508,12 +551,25 @@ router.delete('/room/:roomToken',verifyToken, async (req, res, next) => {
             if(room.roomOwner.toString() === gogoUserId){
                 await deleteRoomById(room._id);
                 //delete Room Cache Record
-                Redis.deleteRecordFromCache(`userCreatedRooms:${gogoUserId}`,'roomToken',room.roomToken);
-                Redis.deleteRecordFromCache(`userCreatedEnrolledRooms:${gogoUserId}`,'roomToken',room.roomToken);
+                Cache.deleteRecordFromCache(`userCreatedRooms:${gogoUserId}`,'roomToken',room.roomToken);
+                Cache.deleteRecordFromCache(`userCreatedEnrolledRooms:${gogoUserId}`,'roomToken',room.roomToken);
 
-                Redis.delRedisWithPattern('userCreatedEnrolledRooms:*');
-                Redis.delRedisWithPattern('userRoomInvitations:*');
+                switch(cacheService){
+                    case 'REDIS':
+                        Cache.delRedisWithPattern('userCreatedEnrolledRooms:*');
+                        Cache.delRedisWithPattern('userRoomInvitations:*');
+                    break;
 
+                    case 'NODECACHE':
+                        const allCacheKeys = clientCache.keys();
+                        allCacheKeys.forEach(function (cacheKey, index) {
+                            if(cacheKey.includes('userCreatedEnrolledRooms') || cacheKey.includes('userRoomInvitations')){
+                                Cache.deleteKeyFromCache(cacheKey)
+                            }
+                        });
+                    break;
+                }
+            
                 return res.status(200).json({
                     status: "success",
                     message:'Room deleted'
@@ -539,39 +595,18 @@ router.delete('/room/:roomToken',verifyToken, async (req, res, next) => {
 });
 
 router.get('/test', async (req,res,next) => {
-    const redisClient = Redis.getConnection();
-
-    redisClient.del('roomAnnouncements:QoPlJklYbjsQ');
-
-   getRoomAnnouncementsPaginate('QoPlJklYbjsQ',1,5);
-
-    res.status(200).json({status:'success'})
-    //console.log(announcements[0]);return;
-  /*   const redisClient = Redis.getConnection();
-    const page = (req.query.page)? parseInt(req.query.page):1
-    const limit = (req.query.limit)? parseInt(req.query.limit):10
-  
-     const announcements = await getRoomAnnouncementsPaginate('jLFmyLNCqBMQ',page,limit);
-     console.log(announcements); */
+    let current = moment().tz(process.env.TIMEZONE).seconds(0).milliseconds(0).format();
+    let ann = moment('2021-10-27T18:30:00.000+00:00').tz(process.env.TIMEZONE).seconds(0).milliseconds(0).format('MMMM Do YYYY, h:mm:ss a');
+    
+    console.log(`Current: ${current}`);
+    console.log(`Current: ${ann}`);
+   
 });
 
 const getOnlineUserSocketIds = async(p) => {
-    const redisClient = Redis.getConnection();
     let onlineUserSockets = [];
     for(const uid of p){
-       let socketPromise  =  await new Promise( async (resolve, reject) => {
-            await redisClient.get('onlineUsers',(err ,data) =>{
-                if(err) return reject(err);
-                if(data !== null){
-                    const onlineUserData = JSON.parse(data).filter(u => u.userId == uid.user);
-                    if(onlineUserData.length > 0){
-                        return resolve(onlineUserData[0].socket)
-                    }else{
-                        return resolve(null);
-                    }
-                }
-            })
-       })
+       let socketPromise  =  await getOnlineUsersSocketIds(uid.user);
        if(socketPromise != null){
             onlineUserSockets.push(socketPromise);
        }
