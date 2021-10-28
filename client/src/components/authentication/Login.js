@@ -93,7 +93,7 @@ const Login = () => {
                     </div>
                 </Card.Body>
             </Card>
-            <div className="w-100 text-center mt-2 d-none">
+            <div className="w-100 text-center mt-2">
                 Need an account? <Link to='/signup'>Sign Up</Link>
             </div>
         </CenteredContainer>
