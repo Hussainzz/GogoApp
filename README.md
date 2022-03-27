@@ -1,5 +1,5 @@
 
-![Logo](https://gogo-appz.herokuapp.com/static/media/gogo.adb33121.png)
+<img src="/demos/gogo.png" width="900">
 
 
 ## Installation
@@ -29,5 +29,6 @@ REDIS_PASSWORD=
 
 https://gogo-appz.herokuapp.com/
 
-![App Screenshot](https://via.placeholder.com/468x300?text=App+Screenshot+Here)
-
+<img src="/demos/dashboard.png" width="700">
+<img src="/demos/roomDash.png" width="700">
+<img src="/demos/roomAnn.png" width="700">
